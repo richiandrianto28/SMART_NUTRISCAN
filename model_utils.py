@@ -149,6 +149,46 @@ def filtering_tokens(tokens, min_len=3, remove_numbers=True):
     hasil = []
     for t in tokens:
         t = t.strip()
+        if not t:
+            continue
+
+        t = re.sub(r'[^a-z0-9]', '', t)
+
+        if not t:
+            continue
+        if remove_numbers and t.isdigit():
+            continue
+        if len(t) < min_len:
+            continue
+        if t in stopwords_id:
+            continue
+
+        hasil.append(t)
+
+    return hasil
+
+
+def tokenize_and_clean_text(text: str):
+    """Cleans and tokenizes the composition text."""
+    if pd.isna(text):
+        return []
+
+    s = str(text).lower()
+    s = re.sub(r"[^a-z0-9\s]", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+
+    return filtering_tokens(s.split())
+
+stopwords_id = {
+    'dan','yang','dengan','atau','pada','di','ke','dari','untuk','dalam','sebagai','oleh',
+    'tanpa','agar','karena','juga','serta','ini','itu','adalah','lebih','dapat','mengandung',
+    'menggunakan','mengolah','bahan','produk','perisa','aroma'
+}
+
+def filtering_tokens(tokens, min_len=3, remove_numbers=True):
+    hasil = []
+    for t in tokens:
+        t = t.strip()
         if not t: continue
         t = re.sub(r'[^a-z0-9]', '', t)
         if not t: continue
