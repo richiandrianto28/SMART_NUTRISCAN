@@ -15,7 +15,7 @@ import scipy.linalg
 if not hasattr(scipy.linalg, 'triu'):
     scipy.linalg.triu = np.triu
 
-# 🌟 MARKER FITUR 2: IMPORT BARU (classify_risk & has_sufficient_input ditambahkan)
+# Import dari model_utils
 from model_utils import (
     load_prediction_models, 
     analyze_product_fully, 
@@ -24,9 +24,7 @@ from model_utils import (
     has_sufficient_input
 )
 
-# 🌟 MARKER FITUR 1: IMPORT BARU (Menggunakan ocr_utils eksternal)
 import easyocr
-from ocr_utils import parse_scan_result
 
 # Initialize session state for history
 if 'scan_history' not in st.session_state:
@@ -59,21 +57,100 @@ def load_ocr_model():
 feat_model, lgbm_model, w2v_model, scaler = load_all_models_and_scaler()
 
 # ==========================================================================
-# 🌟 MARKER FITUR 1: PEMBACA OCR (LAZY LOAD & SAFE EXECUTION)
-# Fungsi manual `preprocess_image_for_ocr` dan `parse_nutrition_text` 
-# Dihapus karena diganti dengan pemanggilan `ocr_utils` yang jauh lebih pintar.
+# 🌟 MARKER FITUR 1: FUNGSI OCR TERINTEGRASI (PENGGANTI ocr_utils.py)
 # ==========================================================================
+def preprocess_image_for_ocr(pil_image):
+    open_cv_image = np.array(pil_image)
+    if len(open_cv_image.shape) > 2 and open_cv_image.shape[2] == 4:
+        open_cv_image = cv2.cvtColor(open_cv_image, cv2.COLOR_RGBA2RGB)
+    if len(open_cv_image.shape) == 3:
+        gray = cv2.cvtColor(open_cv_image, cv2.COLOR_RGB2GRAY)
+    else:
+        gray = open_cv_image
+
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    enhanced_gray = clahe.apply(gray)
+    
+    thresh = cv2.adaptiveThreshold(enhanced_gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+    kernel = np.ones((1, 1), np.uint8)
+    opening = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=1)
+    return Image.fromarray(opening)
+
+def extract_value_near_keyword(words_list, target_keywords, is_text_search=False):
+    best_match, match_idx = None, -1
+    for i, word in enumerate(words_list):
+        matches = difflib.get_close_matches(word.lower(), target_keywords, n=1, cutoff=0.7)
+        if matches:
+            best_match = word
+            match_idx = i
+            break
+    if match_idx == -1:
+        return "" if is_text_search else 0.0
+    if is_text_search:
+        return " ".join(words_list[match_idx+1:])
+    search_window = words_list[match_idx+1 : match_idx+8]
+    for w in search_window:
+        cleaned_num = re.sub(r'[^\d.,]', '', w)
+        if cleaned_num.endswith('.') or cleaned_num.endswith(','): cleaned_num = cleaned_num[:-1]
+        cleaned_num = cleaned_num.replace(',', '.')
+        try: return float(cleaned_num)
+        except ValueError: continue
+    return 0.0
+
+def parse_scan_result(reader, pil_image, mode="nutrition"):
+    """
+    Fungsi utama pengolah OCR yang tadinya ada di ocr_utils.
+    Menerima gambar, memprosesnya, dan mengekstrak data menjadi dictionary terstruktur.
+    """
+    enhanced_img = preprocess_image_for_ocr(pil_image)
+    img_byte_arr = io.BytesIO()
+    enhanced_img.save(img_byte_arr, format='PNG')
+    
+    ocr_results = reader.readtext(img_byte_arr.getvalue(), detail=0, paragraph=False)
+    raw_text = " ".join(ocr_results).replace('\n', ' ')
+    words = raw_text.split()
+    
+    data = {}
+    if mode == "nutrition":
+        data['energi'] = extract_value_near_keyword(words, ['energi', 'energy', 'kalori', 'calories'])
+        data['lemak_total'] = extract_value_near_keyword(words, ['lemak', 'fat'])
+        data['lemak_jenuh'] = extract_value_near_keyword(words, ['jenuh', 'saturated'])
+        data['protein'] = extract_value_near_keyword(words, ['protein'])
+        data['karbohidrat'] = extract_value_near_keyword(words, ['karbohidrat', 'carbohydrate', 'karbo'])
+        data['gula'] = extract_value_near_keyword(words, ['gula', 'sugar', 'sukrosa'])
+        data['garam'] = extract_value_near_keyword(words, ['garam', 'salt'])
+        data['natrium'] = extract_value_near_keyword(words, ['natrium', 'sodium'])
+        data['natrium_benzoat'] = extract_value_near_keyword(words, ['benzoat', 'pengawet benzoat'])
+
+        if data.get('garam', 0) > 0 and data.get('natrium', 0) == 0:
+            data['natrium'] = data['garam'] * 400
+            
+        if len(words) >= 3: data['product_name'] = " ".join(words[:3]).title()
+        else: data['product_name'] = "Produk Tanpa Nama"
+
+    elif mode == "composition":
+        komposisi_raw = extract_value_near_keyword(words, ['komposisi', 'ingredients', 'bahan-bahan', 'bahan'], is_text_search=True)
+        if komposisi_raw:
+            komposisi_text = komposisi_raw.strip()
+            komposisi_text = re.split(r"mengandung alergen|diproduksi menggunakan|informasi nilai gizi", komposisi_text, flags=re.IGNORECASE)[0]
+            data['komposisi'] = komposisi_text.strip().capitalize()
+        else:
+            if len(words) > 2: data['komposisi'] = raw_text.strip().capitalize()
+            else: data['komposisi'] = "Tidak terdeteksi."
+
+    warning_msg = "Cahaya berlebih (glare) bisa menurunkan akurasi OCR" if len(words) < 5 else ""
+    return {
+        "parsed": data, "errors": [], "quality_warnings": [warning_msg] if warning_msg else [],
+        "raw_text": raw_text, "best_variant": "Adaptive Thresholding CLAHE", "variants": {"Adaptive Thresholding CLAHE": "success"}
+    }
+
 def get_ocr_reader_safely():
-    try:
-        return load_ocr_model(), None
-    except Exception as exc:
-        return None, str(exc)
+    try: return load_ocr_model(), None
+    except Exception as exc: return None, str(exc)
 
 def run_ocr_safely(reader, image, mode):
-    try:
-        return parse_scan_result(reader, image, mode=mode), None
-    except Exception as exc:
-        return None, str(exc)
+    try: return parse_scan_result(reader, image, mode=mode), None
+    except Exception as exc: return None, str(exc)
 # ================= END MARKER FITUR 1 =================
 
 
@@ -91,7 +168,6 @@ def render_holistic_nutrition_metrics(energi, takaran_saji, lemak_total, karbohi
     st.markdown("### 📊 Profil Gizi & Makronutrien Holistik")
     st.write("Analisis mendalam mengenai sumber kalori dan dampak glikemik berdasarkan takaran saji.")
 
-    # 1. Row Atas: Kepadatan Energi & Rasio Glikemik
     metrik_col1, metrik_col2 = st.columns(2)
 
     with metrik_col1:
@@ -120,7 +196,6 @@ def render_holistic_nutrition_metrics(energi, takaran_saji, lemak_total, karbohi
         st.metric(label="Rasio Gula dari Total Karbohidrat", value=f"{rasio_gula:.1f}%", delta=rasio_status, delta_color=rasio_color)
         st.caption("Jika >50%, sebagian besar karbohidrat adalah gula sederhana yang bisa memicu lonjakan gula darah (*sugar spike*).")
 
-    # 2. Row Tengah: Distribusi Makronutrien (Pie Chart)
     kalori_lemak, kalori_karbo, kalori_protein = lemak_total * 9, karbohidrat * 4, protein * 4
     total_kalori_makro = kalori_lemak + kalori_karbo + kalori_protein
 
@@ -137,7 +212,6 @@ def render_holistic_nutrition_metrics(energi, takaran_saji, lemak_total, karbohi
         fig_makro.update_layout(height=350, margin=dict(t=40, b=0, l=0, r=0), showlegend=False)
         st.plotly_chart(fig_makro, use_container_width=True)
 
-    # 3. Row Bawah: Progress Bar AKG (Angka Kecukupan Gizi) per Takaran Saji
     st.markdown("#### Pemenuhan Angka Kecukupan Gizi (AKG) Harian")
     st.write(f"Persentase batas harian profil **{user_profile}** yang terpakai untuk **1 Takaran Saji ({takaran_saji}g/ml)** produk ini:")
 
@@ -156,8 +230,6 @@ def render_holistic_nutrition_metrics(energi, takaran_saji, lemak_total, karbohi
     st.progress(min(int(pct_lemak_jenuh), 100))
     if pct_lemak_jenuh > 50: st.warning(f"⚠️ 1 Porsi produk ini menghabiskan **{pct_lemak_jenuh:.1f}%** jatah lemak jenuh harian Anda!")
 
-
-# --- FUNGSI HELPER UNTUK EXPORT HTML REPORT ---
 def generate_html_report(product_name, risk_score, recommendation, upf_ingredients, nutrition_data, tdee_profile, kepadatan_energi, takaran_saji):
     import datetime
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -218,8 +290,6 @@ def generate_html_report(product_name, risk_score, recommendation, upf_ingredien
     """
     return html_content
 
-
-# --- FUNGSI HELPER UNTUK DETEKSI NLP UPF ---
 def deteksi_upf_nlp(komposisi_text):
     upf_keywords = [
         "aspartam", "sukralosa", "sirup fruktosa", "fruktosa sirup", "maltodekstrin",
@@ -234,7 +304,6 @@ def deteksi_upf_nlp(komposisi_text):
             found_ingredients.append(kw.title())
     return found_ingredients
 
-# --- FUNGSI HELPER UNTUK KALKULASI TDEE ---
 def hitung_tdee_dinamis(gender, usia, berat, tinggi, aktivitas):
     if gender == "Pria": bmr = (10 * berat) + (6.25 * tinggi) - (5 * usia) + 5
     else: bmr = (10 * berat) + (6.25 * tinggi) - (5 * usia) - 161
@@ -247,7 +316,6 @@ def hitung_tdee_dinamis(gender, usia, berat, tinggi, aktivitas):
 
 # --- UI Aplikasi ---
 
-# --- Sidebar ---
 with st.sidebar:
     st.image("assets/Logo Smart NutriScan AI.png", width=150)
     st.title("SMART NutriScan AI")
@@ -352,7 +420,6 @@ if app_mode == "Analisis Produk Tunggal":
                             "nutrition": nutrition_data
                         })
 
-                        # Eksekusi unify `classify_risk` dari model_utils
                         risk_info = classify_risk(risk_score)
                         st.metric(label="Skor Risiko Prediksi ML", value=f"{risk_score:.2f}%", delta=risk_info["label"], delta_color="inverse" if risk_score > 25 else "normal")
                         
@@ -385,7 +452,6 @@ if app_mode == "Analisis Produk Tunggal":
                         st.markdown("#### Rekomendasi ML")
                         st.info(recommendation)
 
-                        # NLP UPF
                         upf_ingredients = deteksi_upf_nlp(komposisi)
                         if len(upf_ingredients) > 0:
                             st.markdown("---")
@@ -397,8 +463,6 @@ if app_mode == "Analisis Produk Tunggal":
             else:
                 st.metric(label="Skor Risiko Prediksi", value="-")
                 st.info("Input data dan jalankan analisis untuk melihat detail prediksi risiko, Radar XAI, dan Rekomendasi ML.")
-
-        # ================= END MARKER FITUR 2 =================
 
         if analyze_button and has_sufficient_input(nutrition_data):
             display_profile = kondisi_medis if kondisi_medis != "Tidak Ada" else f"{user_gender} {user_age} Thn"
@@ -590,7 +654,6 @@ elif app_mode == "Scan from Image":
             else:
                  st.metric(label="Skor Risiko Prediksi", value="-")
                  st.info("Jalankan analisis untuk melihat hasil AI.")
-        # ================= END MARKER FITUR 2 =================
 
         if analyze_button and has_sufficient_input(nutrition_data):
             display_profile = kondisi_medis if kondisi_medis != "Tidak Ada" else f"{user_gender} {user_age} Thn"
@@ -728,7 +791,6 @@ elif app_mode == "Perbandingan Produk":
         p_a_natrium = st.number_input("Natrium A (mg)", min_value=0.0, value=float(data_a['natrium']), key="natrium_a")
         p_a_natrium_benzoat = st.number_input("Natrium Benzoat A (mg)", min_value=0.0, value=float(data_a['natrium_benzoat']), format="%.2f", key="benzoat_a")
         p_a_komposisi = st.text_area("Komposisi A", value=data_a['komposisi'], height=100, key="komposisi_a")
-        p_a_garam = p_a_natrium / 400
 
     with col2:
         st.subheader("Produk B")
@@ -775,7 +837,6 @@ elif app_mode == "Perbandingan Produk":
         p_b_natrium = st.number_input("Natrium B (mg)", min_value=0.0, value=float(data_b['natrium']), key="natrium_b")
         p_b_natrium_benzoat = st.number_input("Natrium Benzoat B (mg)", min_value=0.0, value=float(data_b['natrium_benzoat']), format="%.2f", key="benzoat_b")
         p_b_komposisi = st.text_area("Komposisi B", value=data_b['komposisi'], height=100, key="komposisi_b")
-        p_b_garam = p_b_natrium / 400
 
     st.markdown("---")
     compare_button = st.button("⚖️ Bandingkan Sekarang!", type="primary")
@@ -795,12 +856,12 @@ elif app_mode == "Perbandingan Produk":
         nutrition_a = {
             'energi': p_a_energi, 'lemak_total': p_a_lemak_total, 'lemak_jenuh': p_a_lemak_jenuh,
             'protein': p_a_protein, 'karbohidrat': p_a_karbohidrat, 'gula': p_a_gula,
-            'garam': p_a_garam, 'natrium': p_a_natrium, 'natrium_benzoat': p_a_natrium_benzoat
+            'garam': p_a_natrium / 400, 'natrium': p_a_natrium, 'natrium_benzoat': p_a_natrium_benzoat
         }
         nutrition_b = {
             'energi': p_b_energi, 'lemak_total': p_b_lemak_total, 'lemak_jenuh': p_b_lemak_jenuh,
             'protein': p_b_protein, 'karbohidrat': p_b_karbohidrat, 'gula': p_b_gula,
-            'garam': p_b_garam, 'natrium': p_b_natrium, 'natrium_benzoat': p_b_natrium_benzoat
+            'garam': p_b_natrium / 400, 'natrium': p_b_natrium, 'natrium_benzoat': p_b_natrium_benzoat
         }
 
         # ==========================================================================
