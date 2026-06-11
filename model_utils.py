@@ -180,7 +180,7 @@ def load_prediction_models():
             name="feature_extractor"
         )
 
-        lgbm_model = joblib.load(os.path.join(model_path, "model_lgbm_woa_bab3.joblib"))
+        lgbm_model = joblib.load(os.path.join(model_path, "model_lgbm_woa.joblib"))
         w2v_model = Word2Vec.load(os.path.join(model_path, "model_w2v_komposisi.model"))
         
         # Load the fitted scaler
