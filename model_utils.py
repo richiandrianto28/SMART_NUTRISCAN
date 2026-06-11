@@ -135,6 +135,7 @@ def preprocess_batch_excel_data(df):
     
     return df
 
+
 # ==========================================
 # 2. NLP & TEXT MINING MODULE
 # ==========================================
@@ -177,32 +178,6 @@ def tokenize_and_clean_text(text: str):
     s = re.sub(r"[^a-z0-9\s]", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
 
-    return filtering_tokens(s.split())
-
-stopwords_id = {
-    'dan','yang','dengan','atau','pada','di','ke','dari','untuk','dalam','sebagai','oleh',
-    'tanpa','agar','karena','juga','serta','ini','itu','adalah','lebih','dapat','mengandung',
-    'menggunakan','mengolah','bahan','produk','perisa','aroma'
-}
-
-def filtering_tokens(tokens, min_len=3, remove_numbers=True):
-    hasil = []
-    for t in tokens:
-        t = t.strip()
-        if not t: continue
-        t = re.sub(r'[^a-z0-9]', '', t)
-        if not t: continue
-        if remove_numbers and t.isdigit(): continue
-        if len(t) < min_len: continue
-        if t in stopwords_id: continue
-        hasil.append(t)
-    return hasil
-
-def tokenize_and_clean_text(text: str):
-    if pd.isna(text): return []
-    s = str(text).lower()
-    s = re.sub(r"[^a-z0-9\s]", " ", s)
-    s = re.sub(r"\s+", " ", s).strip()
     return filtering_tokens(s.split())
 
 def detect_harmful_additives(text: str):
@@ -419,3 +394,37 @@ def analyze_product_fully_debug(nutrition_data, composition_text, feat_model, lg
         import traceback
         traceback.print_exc()
         return None, None
+
+# ==========================================
+# 4. UTILITY & VALIDATION MODULE (NEW)
+# ==========================================
+
+def has_sufficient_input(nutrition_data):
+    """
+    Memvalidasi apakah form input gizi kosong atau tidak.
+    Mencegah AI memberikan skor 'Aman' secara keliru pada produk yang datanya nol semua.
+    """
+    if not nutrition_data:
+        return False
+    
+    # Cek apakah semua nilai gizi di dalam dictionary bernilai 0
+    # Jika ada setidaknya 1 nilai yang lebih besar dari 0, anggap input valid
+    for key, value in nutrition_data.items():
+        if value > 0:
+            return True
+            
+    return False
+
+def classify_risk(risk_score):
+    """
+    Menyeragamkan klasifikasi label dan warna (style) untuk Skor Risiko
+    agar UI Streamlit tetap konsisten antara mode Manual, OCR, dan Batch.
+    """
+    if risk_score > 75:
+        return {"label": "Sangat Tinggi", "style": "error"}
+    elif risk_score > 50:
+        return {"label": "Tinggi", "style": "warning"}
+    elif risk_score > 25:
+        return {"label": "Sedang", "style": "warning"}
+    else:
+        return {"label": "Rendah", "style": "success"}
