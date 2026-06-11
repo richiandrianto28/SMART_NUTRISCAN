@@ -1,0 +1,14 @@
+streamlit
+pandas
+numpy
+Pillow
+scikit-learn
+tensorflow==2.16.1
+gensim
+lightgbm
+opencv-python-headless
+easyocr
+joblib
+shap
+scipy==1.11.4
+openpyxl
